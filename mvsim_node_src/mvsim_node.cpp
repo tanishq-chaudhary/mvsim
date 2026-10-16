@@ -242,6 +242,11 @@ MVSimNode::MVSimNode(rclcpp::Node::SharedPtr& n)
 				"instead.");
 		}
 	}
+	tf_buffer_ = std::make_unique<tf2_ros::Buffer>(n_->get_clock(),
+                                                  tf2::durationFromSec(2.0));
+   	tf_listener_ =
+  	    std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, n_, false);
+  	tf_buffer_->setUsingDedicatedThread(true);
 #endif
 
 	// Launch GUI thread:
@@ -775,9 +780,9 @@ void MVSimNode::initPubSubs(TPubSubPerVehicle& pubsubs, mvsim::VehicleBase* veh)
 	const auto qos = tf2_ros::DynamicBroadcasterQoS();
 	const auto qos_static = tf2_ros::StaticBroadcasterQoS();
 
-	pubsubs.pub_tf = n_->create_publisher<Msg_TFMessage>(vehVarName("tf", *veh), qos);
+	pubsubs.pub_tf = n_->create_publisher<Msg_TFMessage>("/tf", qos);
 	pubsubs.pub_tf_static =
-		n_->create_publisher<Msg_TFMessage>(vehVarName("tf_static", *veh), qos_static);
+		n_->create_publisher<Msg_TFMessage>("/tf_static", qos_static);
 #endif
 
 	// pub: <VEH>/chassis_markers
@@ -821,10 +826,10 @@ void MVSimNode::initPubSubs(TPubSubPerVehicle& pubsubs, mvsim::VehicleBase* veh)
 			chassis_shape_msg.points[i].y = poly[k].y;
 			chassis_shape_msg.points[i].z = 0;
 		}
-		chassis_shape_msg.color.a = 0.9;
-		chassis_shape_msg.color.r = 0.9;
-		chassis_shape_msg.color.g = 0.9;
-		chassis_shape_msg.color.b = 0.9;
+		chassis_shape_msg.color.a = 0.5;
+		chassis_shape_msg.color.r = 0.0;
+		chassis_shape_msg.color.g = 0.0;
+		chassis_shape_msg.color.b = 1.0;
 		chassis_shape_msg.frame_locked = true;
 
 		// [1:N] Wheel shapes
@@ -1081,6 +1086,32 @@ void MVSimNode::spinNotifyROS()
 			// 3) odometry transform
 			// --------------------------------------------
 			{
+				const mrpt::poses::CPose3D pose_map_base(gh_veh_pose);
+				mrpt::poses::CPose3D pose_map_odom;  // identity by default
+				try
+    			{
+    			    const auto tfMapOdom = tf_buffer_->lookupTransform(
+    			        "map",             					 // target
+    			        vehVarName("odom", *veh),            // source
+    			        tf2::TimePointZero);                 // latest available
+
+    			    const auto& q = tfMapOdom.transform.rotation;
+    			    const auto& t = tfMapOdom.transform.translation;
+
+    			    pose_map_odom = mrpt::poses::CPose3D(
+    			        mrpt::math::CQuaternionDouble(q.w, q.x, q.y, q.z), t.x, t.y, t.z);
+    			}
+    			catch (const tf2::TransformException& ex)
+    			{
+    			    // Throttled so a missing localisation node does not flood the console.
+    			    ROS12_WARN_THROTTLE(
+    			        5000,
+    			        "map->(%s) unavailable (%s); assuming identity.", vehVarName("odom", *veh).c_str(), ex.what());
+    			}
+
+    			// odom_T_base = inv(map_T_odom) * map_T_base
+    			mrpt::poses::CPose3D pose_odom_base;
+    			pose_odom_base.inverseComposeFrom(pose_map_base, pose_map_odom);
 				// TF(namespace <Ri>): /odom -> /base_link
 				if (publish_tf_odom2baselink_)
 				{
@@ -1088,7 +1119,7 @@ void MVSimNode::spinNotifyROS()
 					tx.header.frame_id = vehVarName("odom", *veh);
 					tx.child_frame_id = vehVarName("base_link", *veh);
 					tx.header.stamp = myNow();
-					tx.transform = tf2::toMsg(mrpt2ros::toROS_tfTransform(veh_odom_pose));
+					tx.transform = tf2::toMsg(mrpt2ros::toROS_tfTransform(pose_odom_base.asTPose()));
 
 					Msg_TFMessage tfMsg;
 					tfMsg.transforms.push_back(tx);
@@ -1098,7 +1129,7 @@ void MVSimNode::spinNotifyROS()
 				// Apart from TF, publish to the "odom" topic as well
 				{
 					Msg_Odometry odoMsg;
-					odoMsg.pose.pose = mrpt2ros::toROS_Pose(veh_odom_pose);
+					odoMsg.pose.pose = mrpt2ros::toROS_Pose(pose_odom_base.asTPose());
 
 					// twist is given in the child_frame_id (base_link) frame, as
 					// reconstructed from wheels spinning velocities and geometry:

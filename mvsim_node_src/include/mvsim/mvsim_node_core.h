@@ -84,6 +84,8 @@ using Msg_Clock = rosgraph_msgs::Clock;
 #include <std_msgs/msg/float64.hpp>
 #include <tf2/LinearMath/Transform.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include "wrapper/publisher_wrapper.h"
@@ -315,6 +317,9 @@ class MVSimNode
 			pub_log_topics;
 #endif
 	};
+
+	std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+	std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
 
 	/// Pubs/Subs for each vehicle. Initialized by initPubSubs(), called
 	/// from notifyROSWorldIsUpdated()
